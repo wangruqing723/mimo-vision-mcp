@@ -1,0 +1,18 @@
+{
+  "name": "mcp-server-mimo-vision",
+  "version": "1.0.0",
+  "description": "MCP server for image vision analysis using MiMo multimodal model",
+  "type": "module",
+  "bin": {
+    "mcp-server-mimo-vision": "./bin/server.js"
+  },
+  "files": [
+    "bin/",
+    "README.md"
+  ],
+  "keywords": ["mcp", "vision", "image", "ocr", "mimo", "multimodal"],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  }
+}
