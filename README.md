@@ -1,86 +1,23 @@
 # mcp-server-mimo-vision
 
-MiMo Vision MCP Server — 让 Claude Code 支持图片识别和 OCR，通过 MiMo 多模态模型实现。
+MCP server for image vision analysis using multimodal models (MiMo, Claude, GPT-4o, etc.).
 
-## 为什么需要这个？
+## Why?
 
-Claude Code 的主模型如果不支持多模态（如 mimo-v2.5-pro），就无法直接读取图片。这个 MCP 服务器通过调用支持视觉的 MiMo 模型来分析图片，然后以文本形式返回结果。
+Claude Code's main model may not support multimodal (vision) input. This MCP server bridges the gap by calling a vision-capable model to analyze images and return text descriptions.
 
-## 快速安装
+## Quick Start
 
-### 方式一：一键脚本
+### Option 1: npx (Recommended)
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_USER/mimo-vision-mcp/main/install.sh | bash
-```
-
-或手动下载运行：
-
-```bash
-# 下载
-git clone https://github.com/YOUR_USER/mimo-vision-mcp.git
-cd mimo-vision-mcp
-
-# 设置环境变量
-export ANTHROPIC_AUTH_TOKEN="your-token-here"
-
-# 安装
-bash install.sh
-```
-
-### 方式二：npx（推荐已安装 Node.js 的用户）
-
-```bash
-npx mcp-server-mimo-vision
-```
-
-### 方式三：npm 全局安装
-
-```bash
-npm install -g mcp-server-mimo-vision
-mcp-server-mimo-vision
-```
-
-## 配置
-
-安装后，所有配置集中在 `~/.claude/vision-mcp.conf` 文件中，修改即生效，无需重启安装：
-
-```bash
-# ~/.claude/vision-mcp.conf
-ANTHROPIC_BASE_URL="https://token-plan-cn.xiaomimimo.com/anthropic"
-ANTHROPIC_AUTH_TOKEN="your-token-here"
-VISION_MODEL="mimo-v2.5"          # 改成你想用的视觉模型
-```
-
-### 支持的模型
-
-任何兼容 Anthropic Messages API 且支持多模态的模型都可以，例如：
-
-| 模型 | 说明 |
-|------|------|
-| `mimo-v2.5` | MiMo 多模态模型（默认） |
-| `mimo-v2.5-pro` | MiMo Pro（如果支持视觉） |
-| `claude-sonnet-4-20250514` | Claude Sonnet |
-| `gpt-4o` | GPT-4o（需对应代理支持） |
-
-### 环境变量（优先级更高）
-
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `ANTHROPIC_BASE_URL` | API 代理地址 | `https://token-plan-cn.xiaomimimo.com/anthropic` |
-| `ANTHROPIC_AUTH_TOKEN` | API 认证令牌 | **必须设置** |
-| `VISION_MODEL` | 模型名称 | `mimo-v2.5` |
-
-### Claude Code MCP 配置
-
-在 `~/.claude/.mcp.json` 或项目 `.mcp.json` 中添加：
+Add to `.mcp.json` in your project or `~/.claude/.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "vision": {
       "command": "npx",
-      "args": ["mcp-server-mimo-vision"],
+      "args": ["-y", "@ruqingwang/mcp-server-mimo-vision"],
       "env": {
         "ANTHROPIC_AUTH_TOKEN": "your-token-here"
       }
@@ -89,9 +26,59 @@ VISION_MODEL="mimo-v2.5"          # 改成你想用的视觉模型
 }
 ```
 
-### 图片读取自动拦截（Hook）
+### Option 2: One-click Install Script
 
-为了在 Claude Code 读取图片时自动调用 vision MCP，需要在 `~/.claude/settings.json` 中添加 Hook：
+```bash
+curl -fsSL https://raw.githubusercontent.com/wangruqing723/mimo-vision-mcp/main/install.sh | bash
+```
+
+### Option 3: Global Install
+
+```bash
+npm install -g @ruqingwang/mcp-server-mimo-vision
+```
+
+## Configuration
+
+After install, all settings are in `~/.claude/vision-mcp.conf`:
+
+```bash
+ANTHROPIC_BASE_URL="https://your-proxy.com/anthropic"
+ANTHROPIC_AUTH_TOKEN="your-token"
+VISION_MODEL="mimo-v2.5"  # Change to any vision model
+```
+
+### Supported Models
+
+Any model compatible with Anthropic Messages API that supports multimodal:
+
+| Model | Description |
+|-------|-------------|
+| `mimo-v2.5` | MiMo multimodal (default) |
+| `mimo-v2.5-pro` | MiMo Pro |
+| `claude-sonnet-4-20250514` | Claude Sonnet |
+| `gpt-4o` | GPT-4o (requires compatible proxy) |
+
+### Environment Variables (override config file)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ANTHROPIC_BASE_URL` | API proxy URL | `https://token-plan-cn.xiaomimimo.com/anthropic` |
+| `ANTHROPIC_AUTH_TOKEN` | API auth token | **Required** |
+| `VISION_MODEL` | Model name | `mimo-v2.5` |
+
+### Image Input Modes
+
+The `describe_image` and `ocr_image` tools accept:
+
+1. **File path**: `/path/to/image.png`
+2. **HTTP URL**: `https://example.com/img.jpg`
+3. **Data URI**: `data:image/png;base64,...`
+4. **Raw base64**: base64-encoded image string
+
+### Auto-intercept Hook (Optional)
+
+To automatically use vision MCP when Claude Code reads an image file, add a PreToolUse hook to `~/.claude/settings.json`:
 
 ```json
 {
@@ -103,7 +90,7 @@ VISION_MODEL="mimo-v2.5"          # 改成你想用的视觉模型
           {
             "type": "command",
             "command": "/path/to/hook-vision.sh",
-            "statusMessage": "正在识别图片内容..."
+            "statusMessage": "Analyzing image..."
           }
         ]
       }
@@ -112,37 +99,29 @@ VISION_MODEL="mimo-v2.5"          # 改成你想用的视觉模型
 }
 ```
 
-## 提供的工具
+## Tools
 
-| 工具 | 说明 |
-|------|------|
-| `describe_image` | 分析图片内容，返回文字描述 |
-| `ocr_image` | 从图片中提取文字（OCR） |
+| Tool | Description |
+|------|-------------|
+| `describe_image` | Analyze image content, return text description |
+| `ocr_image` | Extract text from image (OCR) |
 
-## 使用示例
+## Usage
 
-安装配置完成后，直接在 Claude Code 中说：
-
-```
-帮我看看 /path/to/image.png 这张图片的内容
-```
+Once configured, just ask in Claude Code:
 
 ```
-提取截图 /path/to/screenshot.png 中的文字
+Look at /path/to/image.png and describe what's in it
 ```
 
-## 工作原理
-
 ```
-用户: "看看这张图片"
-  → Claude Code (mimo-v2.5-pro) 尝试读取图片
-  → Hook 拦截，检测到是图片文件
-  → 调用 vision MCP 服务器
-  → MCP 服务器将图片 base64 编码，发送给 mimo-v2.5 多模态模型
-  → 返回图片描述文本
-  → Claude Code 展示结果
+Extract text from /path/to/screenshot.png
 ```
 
-## 许可证
+## GitHub
+
+https://github.com/wangruqing723/mimo-vision-mcp
+
+## License
 
 MIT
