@@ -18,9 +18,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { readFileSync, existsSync } from "node:fs";
-import { resolve, extname } from "node:path";
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { resolve, extname, join } from "node:path";
 import { request as httpsRequest } from "node:https";
+import { execSync } from "node:child_process";
+import { tmpdir } from "node:os";
 
 const BASE_URL = (
   process.env.ANTHROPIC_BASE_URL ||
@@ -214,6 +216,71 @@ server.tool(
       "请提取这张图片中的所有文字内容，保持原始格式和布局。"
     );
     return { content: [{ type: "text", text: result }] };
+  }
+);
+
+server.tool(
+  "clipboard_vision",
+  "Analyze the image currently in the system clipboard. Saves clipboard image to temp file, then analyzes it with the vision model.",
+  {
+    prompt: z
+      .string()
+      .optional()
+      .default("请详细描述这张图片的内容")
+      .describe("Question or instruction about the image"),
+  },
+  async ({ prompt }) => {
+    const tmpFile = join(tmpdir(), `clipboard-${Date.now()}.png`);
+    try {
+      // Try multiple clipboard tools
+      const tools = [
+        { cmd: `xclip -selection clipboard -t image/png -o`, check: "xclip" },
+        { cmd: `wl-paste --type image/png`, check: "wl-paste" },
+        { cmd: `pngpaste`, check: "pngpaste" },
+      ];
+
+      let saved = false;
+
+      // Try Linux/Mac clipboard tools
+      for (const tool of tools) {
+        try {
+          execSync(`command -v ${tool.check}`, { stdio: "ignore" });
+          execSync(`${tool.cmd} > "${tmpFile}" 2>/dev/null`, { stdio: "ignore" });
+          if (existsSync(tmpFile) && readFileSync(tmpFile).length > 100) {
+            saved = true;
+            break;
+          }
+        } catch {}
+      }
+
+      // Try WSL powershell
+      if (!saved) {
+        try {
+          execSync(`command -v powershell.exe`, { stdio: "ignore" });
+          const winPath = execSync(`wslpath -w "${tmpFile}"`, { encoding: "utf8" }).trim();
+          execSync(
+            `powershell.exe -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; ` +
+            `$img=[System.Windows.Forms.Clipboard]::GetImage(); ` +
+            `if($img){$img.Save('${winPath}',[System.Drawing.Imaging.ImageFormat]::Png);'OK'}"`,
+            { encoding: "utf8", timeout: 10000 }
+          );
+          if (existsSync(tmpFile) && readFileSync(tmpFile).length > 100) {
+            saved = true;
+          }
+        } catch {}
+      }
+
+      if (!saved) {
+        return {
+          content: [{ type: "text", text: "Error: No image found in clipboard, or no clipboard tool available. Install xclip (Linux), pngpaste (macOS), or use on WSL with powershell.exe." }],
+        };
+      }
+
+      const result = await handleVision(tmpFile, prompt);
+      return { content: [{ type: "text", text: result }] };
+    } catch (e) {
+      return { content: [{ type: "text", text: `Clipboard error: ${e.message}` }] };
+    }
   }
 );
 
