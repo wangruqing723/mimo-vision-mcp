@@ -230,49 +230,74 @@ server.tool(
       .describe("Question or instruction about the image"),
   },
   async ({ prompt }) => {
-    const tmpFile = join(tmpdir(), `clipboard-${Date.now()}.png`);
+    const ts = Date.now();
+    const tmpFile = `/tmp/clipboard-vision-${ts}.png`;
     try {
-      // Try multiple clipboard tools
-      const tools = [
-        { cmd: `xclip -selection clipboard -t image/png -o`, check: "xclip" },
-        { cmd: `wl-paste --type image/png`, check: "wl-paste" },
-        { cmd: `pngpaste`, check: "pngpaste" },
-      ];
-
       let saved = false;
 
-      // Try Linux/Mac clipboard tools
-      for (const tool of tools) {
+      // Try Linux X11
+      try {
+        execSync(`command -v xclip`, { stdio: "ignore" });
+        execSync(`xclip -selection clipboard -t image/png -o > "${tmpFile}" 2>/dev/null`, { stdio: "ignore" });
+        if (existsSync(tmpFile) && readFileSync(tmpFile).length > 100) saved = true;
+      } catch {}
+
+      // Try Linux Wayland
+      if (!saved) {
         try {
-          execSync(`command -v ${tool.check}`, { stdio: "ignore" });
-          execSync(`${tool.cmd} > "${tmpFile}" 2>/dev/null`, { stdio: "ignore" });
-          if (existsSync(tmpFile) && readFileSync(tmpFile).length > 100) {
-            saved = true;
-            break;
-          }
+          execSync(`command -v wl-paste`, { stdio: "ignore" });
+          execSync(`wl-paste --type image/png > "${tmpFile}" 2>/dev/null`, { stdio: "ignore" });
+          if (existsSync(tmpFile) && readFileSync(tmpFile).length > 100) saved = true;
         } catch {}
       }
 
-      // Try WSL powershell
+      // Try macOS
+      if (!saved) {
+        try {
+          execSync(`command -v pngpaste`, { stdio: "ignore" });
+          execSync(`pngpaste "${tmpFile}" 2>/dev/null`, { stdio: "ignore" });
+          if (existsSync(tmpFile) && readFileSync(tmpFile).length > 100) saved = true;
+        } catch {}
+      }
+
+      // Try WSL powershell (use stdin to avoid shell escaping issues with $)
       if (!saved) {
         try {
           execSync(`command -v powershell.exe`, { stdio: "ignore" });
-          const winPath = execSync(`wslpath -w "${tmpFile}"`, { encoding: "utf8" }).trim();
-          execSync(
-            `powershell.exe -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; ` +
-            `$img=[System.Windows.Forms.Clipboard]::GetImage(); ` +
-            `if($img){$img.Save('${winPath}',[System.Drawing.Imaging.ImageFormat]::Png);'OK'}"`,
-            { encoding: "utf8", timeout: 10000 }
-          );
-          if (existsSync(tmpFile) && readFileSync(tmpFile).length > 100) {
-            saved = true;
+          // Get Windows temp dir via stdin
+          const winTempDir = execSync(`powershell.exe -NoProfile -Command -`, {
+            input: "$env:TEMP",
+            encoding: "utf8",
+            timeout: 5000,
+          }).trim().replace(/\\/g, "/");
+          const fileName = `clipboard-vision-${ts}.png`;
+          const winPath = `${winTempDir}/${fileName}`.replace(/\//g, "\\");
+          // Save clipboard image via stdin
+          const psScript = [
+            "Add-Type -AssemblyName System.Windows.Forms",
+            "$img = [System.Windows.Forms.Clipboard]::GetImage()",
+            `if ($img) { $img.Save('${winPath}', [System.Drawing.Imaging.ImageFormat]::Png); 'OK' }`,
+          ].join("\n");
+          const output = execSync(`powershell.exe -NoProfile -Command -`, {
+            input: psScript,
+            encoding: "utf8",
+            timeout: 10000,
+          }).trim();
+          if (output.includes("OK")) {
+            // Map Windows temp back to WSL path
+            const wslTempDir = execSync(`wslpath -u "${winTempDir}"`, { encoding: "utf8" }).trim();
+            const wslFile = `${wslTempDir}/${fileName}`;
+            if (existsSync(wslFile) && readFileSync(wslFile).length > 100) {
+              execSync(`cp "${wslFile}" "${tmpFile}"`, { stdio: "ignore" });
+              saved = true;
+            }
           }
         } catch {}
       }
 
       if (!saved) {
         return {
-          content: [{ type: "text", text: "Error: No image found in clipboard, or no clipboard tool available. Install xclip (Linux), pngpaste (macOS), or use on WSL with powershell.exe." }],
+          content: [{ type: "text", text: "Error: No image found in clipboard, or no clipboard tool available." }],
         };
       }
 
