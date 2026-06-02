@@ -2,7 +2,12 @@
 
 /**
  * MCP Server: MiMo Vision
- * Image vision analysis using MiMo multimodal model via Anthropic-compatible proxy.
+ * Image vision analysis using multimodal model via Anthropic-compatible proxy.
+ *
+ * Supports three image input modes:
+ *   1. File path (local file)
+ *   2. Base64 data (raw or data URI)
+ *   3. Image URL (http/https)
  *
  * Environment variables:
  *   ANTHROPIC_BASE_URL  - API proxy URL (default: https://token-plan-cn.xiaomimimo.com/anthropic)
@@ -15,7 +20,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, extname } from "node:path";
-import { request } from "node:https";
+import { request as httpsRequest } from "node:https";
 
 const BASE_URL = (
   process.env.ANTHROPIC_BASE_URL ||
@@ -39,22 +44,63 @@ function detectMediaType(filePath) {
   return MIME_MAP[ext] || "image/png";
 }
 
-function callVisionAPI(imagePath, prompt) {
-  return new Promise((resolvePromise, reject) => {
-    const absPath = resolve(imagePath);
-    if (!existsSync(absPath)) {
-      return resolvePromise(`Error: file not found: ${absPath}`);
+/**
+ * Resolve image input into { base64, mediaType }
+ * Supports: file path, base64 string, data URI, http/https URL
+ */
+async function resolveImage(input) {
+  // 1. Data URI: data:image/png;base64,xxxxx
+  if (input.startsWith("data:")) {
+    const match = input.match(/^data:([^;]+);base64,(.+)$/);
+    if (match) {
+      return { base64: match[2], mediaType: match[1] };
     }
+    throw new Error("Invalid data URI format");
+  }
 
-    let buf;
-    try {
-      buf = readFileSync(absPath);
-    } catch (e) {
-      return resolvePromise(`Error reading file: ${e.message}`);
-    }
-    const b64 = buf.toString("base64");
-    const mediaType = detectMediaType(absPath);
+  // 2. HTTP/HTTPS URL
+  if (input.startsWith("http://") || input.startsWith("https://")) {
+    const resp = await fetch(input, {
+      signal: AbortSignal.timeout(30_000),
+      redirect: "follow",
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const buf = Buffer.from(await resp.arrayBuffer());
+    const ct = resp.headers.get("content-type") || "image/png";
+    return {
+      base64: buf.toString("base64"),
+      mediaType: ct.split(";")[0].trim(),
+    };
+  }
 
+  // 3. Raw base64 string (no file extension, no URL prefix)
+  if (/^[A-Za-z0-9+/=\n\r]+$/.test(input.slice(0, 100)) && input.length > 200) {
+    // Looks like raw base64
+    const clean = input.replace(/[\n\r\s]/g, "");
+    // Try to detect format from magic bytes
+    const buf = Buffer.from(clean, "base64");
+    let mediaType = "image/png";
+    if (buf[0] === 0xff && buf[1] === 0xd8) mediaType = "image/jpeg";
+    else if (buf[0] === 0x89 && buf[1] === 0x50) mediaType = "image/png";
+    else if (buf[0] === 0x47 && buf[1] === 0x49) mediaType = "image/gif";
+    else if (buf[0] === 0x52 && buf[1] === 0x49) mediaType = "image/webp";
+    return { base64: clean, mediaType };
+  }
+
+  // 4. File path
+  const absPath = resolve(input);
+  if (!existsSync(absPath)) {
+    throw new Error(`File not found: ${absPath}`);
+  }
+  const buf = readFileSync(absPath);
+  return {
+    base64: buf.toString("base64"),
+    mediaType: detectMediaType(absPath),
+  };
+}
+
+function callVisionAPI(imageData, mediaType, prompt) {
+  return new Promise((resolvePromise) => {
     const body = JSON.stringify({
       model: MODEL,
       max_tokens: 4096,
@@ -64,7 +110,7 @@ function callVisionAPI(imagePath, prompt) {
           content: [
             {
               type: "image",
-              source: { type: "base64", media_type: mediaType, data: b64 },
+              source: { type: "base64", media_type: mediaType, data: imageData },
             },
             { type: "text", text: prompt },
           ],
@@ -86,7 +132,7 @@ function callVisionAPI(imagePath, prompt) {
       },
     };
 
-    const req = request(options, (res) => {
+    const req = httpsRequest(options, (res) => {
       const chunks = [];
       res.on("data", (c) => chunks.push(c));
       res.on("end", () => {
@@ -94,10 +140,10 @@ function callVisionAPI(imagePath, prompt) {
           const data = JSON.parse(Buffer.concat(chunks).toString());
           if (data.content && data.content[0] && data.content[0].text) {
             resolvePromise(data.content[0].text);
+          } else if (data.error) {
+            resolvePromise(`API Error: ${data.error.message || JSON.stringify(data.error)}`);
           } else {
-            resolvePromise(
-              `Unexpected API response: ${JSON.stringify(data).slice(0, 500)}`
-            );
+            resolvePromise(`Unexpected response: ${JSON.stringify(data).slice(0, 500)}`);
           }
         } catch (e) {
           resolvePromise(`Parse error: ${e.message}`);
@@ -115,39 +161,56 @@ function callVisionAPI(imagePath, prompt) {
   });
 }
 
+// Unified handler
+async function handleVision(input, prompt) {
+  try {
+    const { base64, mediaType } = await resolveImage(input);
+    return await callVisionAPI(base64, mediaType, prompt);
+  } catch (e) {
+    return `Error: ${e.message}`;
+  }
+}
+
 // --- MCP Server ---
 
 const server = new McpServer({
   name: "mimo-vision",
-  version: "1.0.0",
+  version: "1.1.0",
 });
+
+const imageInputDesc =
+  "Image input. Supports: " +
+  "1) File path (absolute or relative, e.g. '/path/to/image.png'), " +
+  "2) HTTP/HTTPS URL (e.g. 'https://example.com/img.jpg'), " +
+  "3) Base64 data URI (e.g. 'data:image/png;base64,...'), " +
+  "4) Raw base64 string.";
 
 server.tool(
   "describe_image",
-  "Analyze a local image file and return a text description of its content. Supports PNG, JPG, GIF, WEBP, BMP.",
+  "Analyze an image and return a text description. Accepts file path, URL, base64 data URI, or raw base64.",
   {
-    image_path: z.string().describe("Absolute or relative path to the image file"),
+    image: z.string().describe(imageInputDesc),
     prompt: z
       .string()
       .optional()
       .default("请详细描述这张图片的内容")
       .describe("Question or instruction about the image"),
   },
-  async ({ image_path, prompt }) => {
-    const result = await callVisionAPI(image_path, prompt);
+  async ({ image, prompt }) => {
+    const result = await handleVision(image, prompt);
     return { content: [{ type: "text", text: result }] };
   }
 );
 
 server.tool(
   "ocr_image",
-  "Extract all text content from an image (OCR).",
+  "Extract all text content from an image (OCR). Accepts file path, URL, base64 data URI, or raw base64.",
   {
-    image_path: z.string().describe("Absolute or relative path to the image file"),
+    image: z.string().describe(imageInputDesc),
   },
-  async ({ image_path }) => {
-    const result = await callVisionAPI(
-      image_path,
+  async ({ image }) => {
+    const result = await handleVision(
+      image,
       "请提取这张图片中的所有文字内容，保持原始格式和布局。"
     );
     return { content: [{ type: "text", text: result }] };
